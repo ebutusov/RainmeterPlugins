@@ -9,7 +9,7 @@
 #include <sstream>
 #include "WMIService.h"
 #include "ComPtr.h"
-#include "../../API/RainmeterAPI.h"
+#include "../SDK/API/RainmeterAPI.h"
 
 void ComFailLog(LPCWSTR msg, HRESULT code)
 {

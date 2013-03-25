@@ -11,7 +11,7 @@
 #include <Wbemidl.h>
 #include <string>
 #include <sstream>
-#include "../../API/RainmeterAPI.h"
+#include "../SDK/API/RainmeterAPI.h"
 #include "WMIService.h"
 
 int g_measuresCnt = 0;

@@ -10,6 +10,5 @@
   <ItemGroup>
     <ClInclude Include="WMIService.h" />
     <ClInclude Include="ComPtr.h" />
-    <ClInclude Include="resource.h" />
   </ItemGroup>
 </Project>
