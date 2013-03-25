@@ -85,7 +85,7 @@ PLUGIN_EXPORT LPCWSTR GetString(void* data)
 	Measure* measure = (Measure*)data;
 	if (measure->type == eString)
 		return measure->strResult.c_str();
-	else return NULL; // rainmeter will treat this measure as number
+	else return nullptr; // rainmeter will treat this measure as number
 }
 
 //PLUGIN_EXPORT void ExecuteBang(void* data, LPCWSTR args)
@@ -100,7 +100,10 @@ PLUGIN_EXPORT void Finalize(void* data)
 	--g_measuresCnt;
 	// no more wmi measures, release helper
 	if (g_measuresCnt == 0)
+	{
 		delete g_pService;
+		g_pService = nullptr;
+	}
 }
 
 
