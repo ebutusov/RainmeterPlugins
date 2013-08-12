@@ -16,7 +16,12 @@
 
 int g_measuresCnt = 0;
 
+CRITICAL_SECTION g_CS;
+IGlobalInterfaceTable *g_pGIT;
 CWMIService *g_pService;
+
+extern void ComFailLog(LPCWSTR msg, HRESULT code);
+DWORD WINAPI QueryThread(LPVOID param);
 
 struct Measure
 {
@@ -24,24 +29,65 @@ struct Measure
 	double dblResult;
 	std::wstring strResult;
 	std::wstring query;
+	CWMIService *pService;
+	HANDLE hThread;
+
+	Measure() : hThread(NULL) {}
+
+	bool IsDataReady()
+	{
+		return (hThread == NULL);
+	}
 
 	void QueryData(CWMIService *svc)
 	{
-		if (!svc->Exec(query, strResult, dblResult, type))
-		{
-			// something went wrong, no result returned
-			// it could happen because of misspelled class name and/or property
-			// show error tag instead of empty string
-			type = eString;
-			strResult = L"#None"; 
-		}
+		if (hThread != NULL)
+			return;
+		pService = svc;
+		DWORD threadID = 0;
+		hThread = ::CreateThread(NULL, 0, QueryThread, this, 0, &threadID);
 	}
 };
+
+DWORD WINAPI QueryThread(LPVOID param)
+{
+	::EnterCriticalSection(&g_CS);
+	CoInitialize(NULL);
+	Measure *m = static_cast<Measure*>(param);
+	if (!m->pService->Exec(m->query, m->strResult, m->dblResult, m->type))
+	{
+		// something went wrong, no result returned
+		// it could happen because of misspelled class name and/or property
+		// show error tag instead of empty string
+		m->type = eString;
+		m->strResult = L"#Error";
+	}
+	m->hThread = NULL;
+	m->pService = NULL;
+	::CoUninitialize();
+	::LeaveCriticalSection(&g_CS);
+	return 0;
+}
 
 PLUGIN_EXPORT void Initialize(void** data, void* rm)
 {
 	if (g_measuresCnt == 0)
 	{
+		 InitializeCriticalSectionAndSpinCount(&g_CS, 0x00000400);
+
+		 // create GIT for interface marshalling
+		HRESULT hres = CoCreateInstance(CLSID_StdGlobalInterfaceTable, 
+		NULL,
+		CLSCTX_INPROC_SERVER,
+		IID_IGlobalInterfaceTable, 
+		(void **)&g_pGIT);
+	
+		if (FAILED(hres))
+		{
+			ComFailLog(L"Failed to create GIT!", hres);
+			return;
+		}
+
 		// we assume that COM has been properly inialized for this thread
 		// create and initialize global wmi query helper
 
@@ -83,9 +129,13 @@ PLUGIN_EXPORT double Update(void* data)
 PLUGIN_EXPORT LPCWSTR GetString(void* data)
 {
 	Measure* measure = (Measure*)data;
-	if (measure->type == eString)
-		return measure->strResult.c_str();
-	else return nullptr; // rainmeter will treat this measure as number
+	if (measure->IsDataReady())
+	{
+		if (measure->type == eString)
+			return measure->strResult.c_str();
+		else return nullptr; // rainmeter will treat this measure as number
+	}
+	else return L"#Wait";
 }
 
 //PLUGIN_EXPORT void ExecuteBang(void* data, LPCWSTR args)

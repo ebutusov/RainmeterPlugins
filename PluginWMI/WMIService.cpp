@@ -11,6 +11,8 @@
 #include "ComPtr.h"
 #include "../SDK/API/RainmeterAPI.h"
 
+extern IGlobalInterfaceTable *g_pGIT;
+
 void ComFailLog(LPCWSTR msg, HRESULT code)
 {
 	std::wstringstream ss;
@@ -69,25 +71,31 @@ bool CWMIService::Connect(LPCWSTR wmi_namespace)
 		return false;
 	}
 
+	// we will call it from another thread anyways
   // set security levels on the proxy
-  hres = CoSetProxyBlanket(
-      m_pSvc,                        // Indicates the proxy to set
-      RPC_C_AUTHN_WINNT,           // RPC_C_AUTHN_xxx
-      RPC_C_AUTHZ_NONE,            // RPC_C_AUTHZ_xxx
-      NULL,                        // Server principal name 
-      RPC_C_AUTHN_LEVEL_CALL,      // RPC_C_AUTHN_LEVEL_xxx 
-      RPC_C_IMP_LEVEL_IMPERSONATE, // RPC_C_IMP_LEVEL_xxx
-      NULL,                        // client identity
-      EOAC_NONE                    // proxy capabilities 
-  );
+  //hres = CoSetProxyBlanket(
+  //    m_pSvc,                        // Indicates the proxy to set
+  //    RPC_C_AUTHN_WINNT,           // RPC_C_AUTHN_xxx
+  //    RPC_C_AUTHZ_NONE,            // RPC_C_AUTHZ_xxx
+  //    NULL,                        // Server principal name 
+  //    RPC_C_AUTHN_LEVEL_CALL,      // RPC_C_AUTHN_LEVEL_xxx 
+  //    RPC_C_IMP_LEVEL_IMPERSONATE, // RPC_C_IMP_LEVEL_xxx
+  //    NULL,                        // client identity
+  //    EOAC_NONE                    // proxy capabilities 
+  //);
 
-  if (FAILED(hres))
-  {
-		ComFailLog(L"Failed to set proxy!", hres);
-    m_pSvc->Release();
-		m_pSvc = nullptr;
-    locator->Release();
-  }
+  //if (FAILED(hres))
+  //{
+		//ComFailLog(L"Failed to set proxy!", hres);
+  //  m_pSvc->Release();
+		//m_pSvc = nullptr;
+  //  locator->Release();
+  //}
+
+	// store instance in global interface table for marshaling
+
+	
+	g_pGIT->RegisterInterfaceInGlobal(m_pSvc, IID_IWbemServices, &m_cookie);
 	return true;
 }
 
@@ -103,18 +111,37 @@ void CWMIService::Release()
 bool CWMIService::Exec(const std::wstring &wmi_query, 
 	std::wstring &strResult, double &dblResult, EResultType &type)
 {
+	// get instance from GIT
+	g_pGIT->GetInterfaceFromGlobal(m_cookie, IID_IWbemServices, (void **)&m_pSvc);
+
+	// set security levels on the proxy for this thread (otherwise calls would return empty results)
+  HRESULT hres = CoSetProxyBlanket(
+      m_pSvc,                        // Indicates the proxy to set
+      RPC_C_AUTHN_WINNT,           // RPC_C_AUTHN_xxx
+      RPC_C_AUTHZ_NONE,            // RPC_C_AUTHZ_xxx
+      NULL,                        // Server principal name 
+      RPC_C_AUTHN_LEVEL_CALL,      // RPC_C_AUTHN_LEVEL_xxx 
+      RPC_C_IMP_LEVEL_IMPERSONATE, // RPC_C_IMP_LEVEL_xxx
+      NULL,                        // client identity
+      EOAC_NONE                    // proxy capabilities 
+  );
+
+  if (FAILED(hres))
+	{
+		ComFailLog(L"Failed to set proxy!", hres);
+		return false;
+	}	
+
 	if (!m_pSvc)
 	{
 		_ASSERT(false);
 		// invalid state, Connect not called or failed
-		type = eString;
-		strResult = L"#ConnectError";
+		ComFailLog(L"Service error!", 666);
 		return false;
 	}
 
 	CComPtr<IEnumWbemClassObject> pEnumerator;
-
-  HRESULT hres = m_pSvc->ExecQuery(
+	hres = m_pSvc->ExecQuery(
       bstr_t("WQL"), 
       bstr_t(wmi_query.c_str()),
       WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, 
@@ -137,6 +164,7 @@ bool CWMIService::Exec(const std::wstring &wmi_query,
 		ULONG ret = 0;
 
 		HRESULT hr = pEnumerator->Next(WBEM_INFINITE, 1, &clsObj, &ret);
+		
 		if(ret == 0) break;
 
 		BSTR propName = nullptr;
@@ -159,7 +187,7 @@ bool CWMIService::Exec(const std::wstring &wmi_query,
 
 		if (FAILED(hr))
 		{
-			std::wstring err = L"WMI query failed: " + wmi_query;
+			std::wstring err = L"Get property failed: " + wmi_query;
 			ComFailLog(err.c_str(), hres);
 			break;
 		}
