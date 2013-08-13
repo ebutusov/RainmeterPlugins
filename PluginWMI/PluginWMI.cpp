@@ -11,17 +11,20 @@
 #include <Wbemidl.h>
 #include <string>
 #include <sstream>
+#include <thread>
+#include <mutex>
+#include <queue>
+#include <condition_variable>
 #include "../SDK/API/RainmeterAPI.h"
 #include "WMIService.h"
 
-int g_measuresCnt = 0;
-
-CRITICAL_SECTION g_CS;
-IGlobalInterfaceTable *g_pGIT;
-CWMIService *g_pService;
-
 extern void ComFailLog(LPCWSTR msg, HRESULT code);
-DWORD WINAPI QueryThread(LPVOID param);
+
+int g_measuresCnt = 0;
+bool g_run = true;
+std::mutex g_mutex;
+std::condition_variable g_cv;
+std::thread g_worker;
 
 struct Measure
 {
@@ -29,80 +32,55 @@ struct Measure
 	double dblResult;
 	std::wstring strResult;
 	std::wstring query;
-	CWMIService *pService;
-	HANDLE hThread;
-
-	Measure() : hThread(NULL) {}
-
-	bool IsDataReady()
-	{
-		return (hThread == NULL);
-	}
-
-	void QueryData(CWMIService *svc)
-	{
-		if (hThread != NULL)
-			return;
-		pService = svc;
-		DWORD threadID = 0;
-		hThread = ::CreateThread(NULL, 0, QueryThread, this, 0, &threadID);
-	}
+	bool ready;
 };
 
-DWORD WINAPI QueryThread(LPVOID param)
+std::queue<Measure*> g_queue;
+
+void QueryWorker()
 {
-	::EnterCriticalSection(&g_CS);
-	CoInitialize(NULL);
-	Measure *m = static_cast<Measure*>(param);
-	if (!m->pService->Exec(m->query, m->strResult, m->dblResult, m->type))
+	::CoInitialize(NULL);
+	
+	CWMIService srv;
+	srv.Connect(L"root\\CIMV2");
+
+	while (g_run)
 	{
-		// something went wrong, no result returned
-		// it could happen because of misspelled class name and/or property
-		// show error tag instead of empty string
-		m->type = eString;
-		m->strResult = L"#Error";
+		Measure *m;
+		{
+			std::unique_lock<std::mutex> lock(g_mutex);
+			if (g_queue.empty())
+				g_cv.wait(lock, [] { return !g_queue.empty() || !g_run; });
+			if (!g_run) break;
+			m = g_queue.front();
+			g_queue.pop();
+			m->ready = false;
+		} // unlock
+
+		if (!srv.Exec(m->query, m->strResult, m->dblResult, m->type))
+		{
+			// show error tag
+			m->type = eString;
+			m->strResult = L"#Error";
+		}
+		m->ready = true;
 	}
-	m->hThread = NULL;
-	m->pService = NULL;
-	::CoUninitialize();
-	::LeaveCriticalSection(&g_CS);
-	return 0;
+}
+
+void EnqueueForUpdate(Measure *m)
+{
+	std::unique_lock<std::mutex> lg(g_mutex);
+	g_queue.push(m);
+	g_cv.notify_one();
 }
 
 PLUGIN_EXPORT void Initialize(void** data, void* rm)
 {
-	if (g_measuresCnt == 0)
+	if (g_measuresCnt == 0) // first time initialization
 	{
-		 InitializeCriticalSectionAndSpinCount(&g_CS, 0x00000400);
-
-		 // create GIT for interface marshalling
-		HRESULT hres = CoCreateInstance(CLSID_StdGlobalInterfaceTable, 
-		NULL,
-		CLSCTX_INPROC_SERVER,
-		IID_IGlobalInterfaceTable, 
-		(void **)&g_pGIT);
-	
-		if (FAILED(hres))
-		{
-			ComFailLog(L"Failed to create GIT!", hres);
-			return;
-		}
-
-		// we assume that COM has been properly inialized for this thread
-		// create and initialize global wmi query helper
-
-		g_pService = new CWMIService();
-		
-		// even if it fails to Connect, we will leave it as is
-		// Exec will return #ConnectError when called
-
-		g_pService->Connect(L"root\\CIMV2");
-
-		// for now only root\CIMV2 is allowed, but it should be easy to add
-		// another parameter to ini file (WMINamespace) and allow to connect to other
-		// namespaces
-		// e.g. we can hold a map of CWMIService instances, or just put a ptr to the right
-		// CWMIService instance into the Measure struct
+		// start WMI query thread
+		// waits for main thread to put Measures on g_queue for processing
+		g_worker.swap(std::thread(QueryWorker));
 	}
 
 	Measure* measure = new Measure;
@@ -119,17 +97,17 @@ PLUGIN_EXPORT void Reload(void* data, void* rm, double* maxValue)
 PLUGIN_EXPORT double Update(void* data)
 {
 	Measure* measure = (Measure*)data;
-	measure->QueryData(g_pService);
-	
-	if (measure->type == eNum)
-		return measure->dblResult;
+	Measure copy = *measure;
+	EnqueueForUpdate(measure);
+	if (copy.type == eNum)
+		return copy.dblResult;
 	else return 0.0;
 }
 
 PLUGIN_EXPORT LPCWSTR GetString(void* data)
 {
 	Measure* measure = (Measure*)data;
-	if (measure->IsDataReady())
+	if (measure->ready)
 	{
 		if (measure->type == eString)
 			return measure->strResult.c_str();
@@ -151,8 +129,10 @@ PLUGIN_EXPORT void Finalize(void* data)
 	// no more wmi measures, release helper
 	if (g_measuresCnt == 0)
 	{
-		delete g_pService;
-		g_pService = nullptr;
+		// stop queue thread
+		g_run = false;
+		g_cv.notify_one();
+		g_worker.join();
 	}
 }
 

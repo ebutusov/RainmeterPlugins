@@ -13,12 +13,11 @@
 #include <Wbemidl.h>
 #include <string>
 
-enum EResultType { eString, eNum, eWait };
+enum EResultType { eString, eNum };
 
 class CWMIService
 {
 	IWbemServices *m_pSvc;
-	DWORD m_cookie;
 	CWMIService(CWMIService &other); // no copy
 public:
 	CWMIService();
