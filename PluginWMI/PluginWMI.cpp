@@ -20,22 +20,26 @@
 
 extern void ComFailLog(LPCWSTR msg, HRESULT code);
 
-int g_measuresCnt = 0;
-bool g_run = true;
-std::mutex g_mutex;
-std::condition_variable g_cv;
-std::thread g_worker;
+static int g_measuresCnt = 0;
+static bool g_run = true;
+static std::mutex g_mutex;
+static std::condition_variable g_cv;
+static std::thread g_worker;
 
 struct Measure
 {
+	Measure() : refreshInterval(60), lastUpdate(0) {}
+
 	EResultType type;
 	double dblResult;
 	std::wstring strResult;
 	std::wstring query;
-	bool ready;
+	int refreshInterval;
+	int lastUpdate;
+	bool queued;
 };
 
-std::queue<Measure*> g_queue;
+static std::queue<Measure*> g_queue;
 
 void QueryWorker()
 {
@@ -54,7 +58,6 @@ void QueryWorker()
 			if (!g_run) break;
 			m = g_queue.front();
 			g_queue.pop();
-			m->ready = false;
 		} // unlock
 
 		if (!srv.Exec(m->query, m->strResult, m->dblResult, m->type))
@@ -63,12 +66,13 @@ void QueryWorker()
 			m->type = eString;
 			m->strResult = L"#Error";
 		}
-		m->ready = true;
+		m->queued = false;
 	}
 }
 
 void EnqueueForUpdate(Measure *m)
 {
+	m->queued = true;
 	std::unique_lock<std::mutex> lg(g_mutex);
 	g_queue.push(m);
 	g_cv.notify_one();
@@ -91,23 +95,31 @@ PLUGIN_EXPORT void Initialize(void** data, void* rm)
 PLUGIN_EXPORT void Reload(void* data, void* rm, double* maxValue)
 {
 	Measure* measure = (Measure*)data;
+	measure->refreshInterval = RmReadInt(rm, L"Refresh", 60);
 	measure->query = RmReadString(rm, L"Query", L"");
+	measure->lastUpdate = 0;
 }
 
 PLUGIN_EXPORT double Update(void* data)
 {
-	Measure* measure = (Measure*)data;
-	Measure copy = *measure;
-	EnqueueForUpdate(measure);
-	if (copy.type == eNum)
-		return copy.dblResult;
-	else return 0.0;
+	Measure* m = (Measure*)data;
+	DWORD now = ::GetTickCount() / 1000;
+	if (now - m->lastUpdate >= m->refreshInterval)
+	{
+		Measure copy = *m;
+		EnqueueForUpdate(m);
+		m->lastUpdate = now;
+		m = &copy;
+	}
+	if (m->type == eNum)
+		return m->dblResult;
+	return 0.0;
 }
 
 PLUGIN_EXPORT LPCWSTR GetString(void* data)
 {
 	Measure* measure = (Measure*)data;
-	if (measure->ready)
+	if (!measure->queued)
 	{
 		if (measure->type == eString)
 			return measure->strResult.c_str();
