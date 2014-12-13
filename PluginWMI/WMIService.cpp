@@ -185,6 +185,7 @@ bool CWMIService::Exec(const std::wstring &wmi_query,
 			case VT_R8:
 				type = eNum;
 				dblResult = vtProp.dblVal;
+				break;
 			case VT_BOOL:
 				type = eString;
 				// XXX maybe map to 1/0 instead of strings?
