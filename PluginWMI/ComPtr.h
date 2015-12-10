@@ -46,10 +46,3 @@ public:
 		return tmp;
 	}
 };
-
-template <typename T>
-CComPtr<T> wrap_ptr(T* ptr)
-{
-	CComPtr<T> cls(ptr);
-	return std::move(cls);
-}

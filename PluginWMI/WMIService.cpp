@@ -129,7 +129,6 @@ bool CWMIService::Exec(const std::wstring &wmi_query,
     return false;
   }
 
-	//auto enumWrap = wrap_ptr(pEnumerator); // just for proper releasing
 	bool has_result = false;
 
 	while (pEnumerator)
